@@ -17,3 +17,8 @@ pip install -r requirements.txt -->
 
 <!-- bị lỗi thì hạ bản flask -->
 <!-- pip install flask==2.3.2 -->
+
+curl.exe -g -X POST "http://localhost:8000/api/orders" `
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoic29uIiwiZXhwIjoxNzc2MjQxMTIxfQ.twHqXTjnQn5jSaxN1WPBboblZBtDUggTRtdEsiFz7PI" `
+-H "Content-Type: application/json" `
+-d '{"user":"son","product":"Laptop","price":1000}'
