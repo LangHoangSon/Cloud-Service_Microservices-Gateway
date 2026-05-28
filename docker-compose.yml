@@ -1,0 +1,69 @@
+version: "3.9"
+
+services:
+
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - AUTH_SERVICE_URL=http://auth_service:8001
+      - PRODUCT_SERVICE_URL=http://product_service:8002
+      - ORDER_SERVICE_URL=http://order_service:8003
+      - NOTIFICATION_SERVICE_URL=http://notification_service:8004
+      - JWT_SECRET=super-secret-key-change-in-prod
+    depends_on:
+      - auth_service
+      - product_service
+      - order_service
+      - notification_service
+    networks:
+      - ecommerce_net
+
+  auth_service:
+    build:
+      context: ./services/auth_service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - JWT_SECRET=super-secret-key-change-in-prod
+    networks:
+      - ecommerce_net
+
+  product_service:
+    build:
+      context: ./services/product_service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    networks:
+      - ecommerce_net
+
+  order_service:
+    build:
+      context: ./services/order_service
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - NOTIFICATION_SERVICE_URL=http://notification_service:8004
+    volumes:
+      - ./services/order_service/orders:/app/orders
+    networks:
+      - ecommerce_net
+
+  notification_service:
+    build:
+      context: ./services/notification_service
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8004"
+    networks:
+      - ecommerce_net
+
+networks:
+  ecommerce_net:
+    driver: bridge
