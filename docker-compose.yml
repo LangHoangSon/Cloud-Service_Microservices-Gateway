@@ -2,6 +2,24 @@ version: "3.9"
 
 services:
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB:       orders_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   gateway:
     build:
       context: ./services/gateway
@@ -49,9 +67,12 @@ services:
     ports:
       - "8003:8003"
     environment:
+      - JWT_SECRET=super-secret-key-change-in-prod
       - NOTIFICATION_SERVICE_URL=http://notification_service:8004
-    volumes:
-      - ./services/order_service/orders:/app/orders
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/orders_db
+    depends_on:
+      postgres:
+        condition: service_healthy   # Wait until Postgres is ready
     networks:
       - ecommerce_net
 
@@ -67,3 +88,6 @@ services:
 networks:
   ecommerce_net:
     driver: bridge
+
+volumes:
+  postgres_data:   # Persist DB data across docker compose down/up

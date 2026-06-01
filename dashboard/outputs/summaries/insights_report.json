@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-05-31T12:20:49.303270",
+  "kpis": {
+    "total_orders": 500000,
+    "total_revenue": 240593111.52,
+    "avg_order_value": 481.19,
+    "unique_customers": 99393,
+    "delivery_rate_pct": 59.0,
+    "cancellation_rate_pct": 6.8
+  },
+  "cluster_insights": [
+    "Segment 1 \u2014 Loyal Customers: 24,430 customers who moderately recent, averaging 6.1 orders and $4,671 total spend. Avg order value: $872.82. \u2192 High-value segment: prioritise retention campaigns.",
+    "Segment 0 \u2014 Champions: 64,258 customers who moderately recent, averaging 4.1 orders and $1,325 total spend. Avg order value: $334.18.",
+    "Segment 2 \u2014 At-Risk: 10,157 customers who have not ordered recently, averaging 2.9 orders and $1,299 total spend. Avg order value: $462.78. \u2192 Dormant segment: consider win-back promotions."
+  ],
+  "revenue_insights": [
+    "Peak revenue month: 2026-05 ($52,437,846) \u2014 likely driven by seasonal promotions.",
+    "Lowest revenue month: 2024-05 ($384,057).",
+    "3-month revenue trend: +204.2% \u2014 positive growth momentum."
+  ],
+  "category_insights": [
+    "Top category: Electronics ($130,353,887 revenue, 304,571 orders).",
+    "Lowest revenue category: Stationery ($4,411,412) \u2014 consider bundling or promotional pricing."
+  ]
+}

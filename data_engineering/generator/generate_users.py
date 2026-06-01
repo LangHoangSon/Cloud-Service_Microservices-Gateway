@@ -52,3 +52,5 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str,  default="../raw_data/users/users.json")
     args = parser.parse_args()
     generate_users(args.count, Path(args.output))
+
+

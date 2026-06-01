@@ -1,8 +1,6 @@
 import os
 import uuid
-import json
 import httpx
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -10,55 +8,38 @@ import jwt
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Order Service", version="1.0.0")
+from database.database import get_db, init_db
+from models.order import Order, OrderItem, OrderStatus
 
-JWT_SECRET            = os.getenv("JWT_SECRET", "super-secret-key-change-in-prod")
-JWT_ALGO              = "HS256"
-NOTIFICATION_URL      = os.getenv("NOTIFICATION_SERVICE_URL", "http://localhost:8004")
-ORDERS_DIR            = Path("orders")
-ORDERS_FILE           = ORDERS_DIR / "orders.json"
+# ── App setup ─────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()   # Create tables on startup
+    yield
 
-ORDERS_DIR.mkdir(exist_ok=True)
+app = FastAPI(title="Order Service", version="2.0.0", lifespan=lifespan)
 
-ORDER_STATUSES = {"pending", "confirmed", "shipped", "delivered", "cancelled"}
-
-
-# ── File store ────────────────────────────────────────────────────────────────
-def _load() -> dict:
-    if not ORDERS_FILE.exists():
-        ORDERS_FILE.write_text("{}")
-    return json.loads(ORDERS_FILE.read_text())
-
-def _save(orders: dict):
-    ORDERS_FILE.write_text(json.dumps(orders, indent=2, ensure_ascii=False))
+JWT_SECRET       = os.getenv("JWT_SECRET", "super-secret-key-change-in-prod")
+JWT_ALGO         = "HS256"
+NOTIFICATION_URL = os.getenv("NOTIFICATION_SERVICE_URL", "http://localhost:8004")
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
-class OrderItem(BaseModel):
+class OrderItemIn(BaseModel):
     product_id: str
     quantity:   int
     unit_price: float
 
 class OrderCreate(BaseModel):
     user_id: str
-    items:   list[OrderItem]
+    items:   list[OrderItemIn]
 
 class StatusUpdate(BaseModel):
     status: str
-
-class OrderResponse(BaseModel):
-    order_id:     str
-    user_id:      str
-    status:       str
-    total_amount: float
-    items:        list[dict]
-    created_at:   str
-    updated_at:   str
-
-class OrderListResponse(BaseModel):
-    total:  int
-    orders: list[OrderResponse]
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────
@@ -73,127 +54,152 @@ def require_auth(credentials: HTTPAuthorizationCredentials = Depends(bearer_sche
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-# ── Notification helper (fire-and-forget) ─────────────────────────────────────
-async def _notify(order: dict, event_type: str):
-    """Send notification asynchronously — failure never blocks the order response."""
+# ── Notification helper ───────────────────────────────────────────────────────
+async def _notify(order: Order, event_type: str):
     payload = {
-        "user_id":  order["user_id"],
-        "email":    f"user-{order['user_id'][:8]}@example.com",
+        "user_id":  order.user_id,
+        "email":    f"user-{order.user_id[:8]}@example.com",
         "type":     event_type,
-        "order_id": order["order_id"],
-        "message":  f"Your order {order['order_id'][:8]} is now {order['status']}.",
+        "order_id": order.order_id,
+        "message":  f"Your order {order.order_id[:8]} is now {order.status}.",
     }
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             await client.post(f"{NOTIFICATION_URL}/notifications/send", json=payload)
     except Exception:
-        pass  # Notification failure must never fail the order
+        pass  # Never block order on notification failure
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/health")
-def health():
-    orders = _load()
-    return {"service": "order", "status": "ok", "total_orders": len(orders)}
+async def health(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(func.count()).select_from(Order))
+    total  = result.scalar()
+    return {"service": "order", "status": "ok", "total_orders": total, "storage": "postgresql"}
 
 
-@app.post("/orders", response_model=OrderResponse, status_code=201)
-async def create_order(body: OrderCreate, _=Depends(require_auth)):
+@app.post("/orders", status_code=201)
+async def create_order(
+    body: OrderCreate,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_auth),
+):
     if not body.items:
         raise HTTPException(status_code=400, detail="Order must have at least one item")
 
-    orders  = _load()
-    now     = datetime.now(timezone.utc).isoformat()
-    oid     = str(uuid.uuid4())
-    total   = sum(item.quantity * item.unit_price for item in body.items)
+    total = round(sum(i.quantity * i.unit_price for i in body.items), 2)
 
-    order = {
-        "order_id":     oid,
-        "user_id":      body.user_id,
-        "status":       "pending",
-        "total_amount": round(total, 2),
-        "items":        [i.model_dump() for i in body.items],
-        "created_at":   now,
-        "updated_at":   now,
-    }
-    orders[oid] = order
-    _save(orders)
+    order = Order(
+        order_id=str(uuid.uuid4()),
+        user_id=body.user_id,
+        total_amount=total,
+        status=OrderStatus.pending,
+    )
+    for item in body.items:
+        order.items.append(OrderItem(
+            item_id=str(uuid.uuid4()),
+            product_id=item.product_id,
+            quantity=item.quantity,
+            unit_price=item.unit_price,
+        ))
+
+    db.add(order)
+    await db.flush()   # Get order_id before commit
+    await db.refresh(order)
 
     await _notify(order, "order_confirmed")
-    return order
+    return order.to_dict()
 
 
-@app.get("/orders", response_model=OrderListResponse)
-def list_orders(
+@app.get("/orders")
+async def list_orders(
     user_id: Optional[str] = Query(None),
     status:  Optional[str] = Query(None),
     limit:   int           = Query(20, ge=1, le=100),
     offset:  int           = Query(0,  ge=0),
+    db: AsyncSession = Depends(get_db),
     _=Depends(require_auth),
 ):
-    orders = list(_load().values())
+    query = select(Order).order_by(Order.created_at.desc())
 
     if user_id:
-        orders = [o for o in orders if o["user_id"] == user_id]
+        query = query.where(Order.user_id == user_id)
     if status:
-        if status not in ORDER_STATUSES:
-            raise HTTPException(status_code=400, detail=f"Invalid status. Use: {ORDER_STATUSES}")
-        orders = [o for o in orders if o["status"] == status]
+        if status not in OrderStatus._value2member_map_:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {list(OrderStatus._value2member_map_.keys())}")
+        query = query.where(Order.status == status)
 
-    # Sort newest first
-    orders.sort(key=lambda o: o["created_at"], reverse=True)
+    # Total count
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_query)).scalar()
 
-    total = len(orders)
-    return OrderListResponse(total=total, orders=orders[offset: offset + limit])
+    # Paginated results
+    result = await db.execute(query.offset(offset).limit(limit))
+    orders = result.scalars().all()
 
-
-@app.get("/orders/{order_id}", response_model=OrderResponse)
-def get_order(order_id: str, _=Depends(require_auth)):
-    orders = _load()
-    order  = orders.get(order_id)
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return order
-
-
-@app.put("/orders/{order_id}/status", response_model=OrderResponse)
-async def update_status(order_id: str, body: StatusUpdate, _=Depends(require_auth)):
-    if body.status not in ORDER_STATUSES:
-        raise HTTPException(status_code=400, detail=f"Invalid status. Use: {ORDER_STATUSES}")
-
-    orders = _load()
-    order  = orders.get(order_id)
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    order["status"]     = body.status
-    order["updated_at"] = datetime.now(timezone.utc).isoformat()
-    orders[order_id]    = order
-    _save(orders)
-
-    # Notify on meaningful status transitions
-    if body.status in {"confirmed", "shipped", "delivered"}:
-        await _notify(order, f"order_{body.status}")
-
-    return order
+    return {"total": total, "orders": [o.to_dict() for o in orders]}
 
 
 @app.get("/orders/stats/summary")
-def order_stats(_=Depends(require_auth)):
-    """Quick summary stats — useful for dashboard and Databricks validation."""
-    orders = list(_load().values())
-    if not orders:
-        return {"total": 0}
+async def order_stats(
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_auth),
+):
+    result = await db.execute(
+        select(
+            Order.status,
+            func.count(Order.order_id).label("count"),
+            func.sum(Order.total_amount).label("revenue"),
+        ).group_by(Order.status)
+    )
+    rows = result.all()
 
-    by_status = {}
-    for o in orders:
-        by_status[o["status"]] = by_status.get(o["status"], 0) + 1
-
-    total_revenue = sum(o["total_amount"] for o in orders)
+    by_status = {r.status: r.count for r in rows}
+    total_orders  = sum(r.count   for r in rows)
+    total_revenue = sum(r.revenue or 0 for r in rows)
 
     return {
-        "total_orders":   len(orders),
-        "total_revenue":  round(total_revenue, 2),
-        "by_status":      by_status,
-        "avg_order_value": round(total_revenue / len(orders), 2),
+        "total_orders":    total_orders,
+        "total_revenue":   round(total_revenue, 2),
+        "avg_order_value": round(total_revenue / total_orders, 2) if total_orders else 0,
+        "by_status":       by_status,
+        "storage":         "postgresql",
     }
+
+
+@app.get("/orders/{order_id}")
+async def get_order(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_auth),
+):
+    result = await db.execute(select(Order).where(Order.order_id == order_id))
+    order  = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order.to_dict()
+
+
+@app.put("/orders/{order_id}/status")
+async def update_status(
+    order_id: str,
+    body: StatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_auth),
+):
+    if body.status not in OrderStatus._value2member_map_:
+        raise HTTPException(status_code=400, detail=f"Invalid status")
+
+    result = await db.execute(select(Order).where(Order.order_id == order_id))
+    order  = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    order.status     = body.status
+    order.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+
+    if body.status in {"confirmed", "shipped", "delivered"}:
+        await _notify(order, f"order_{body.status}")
+
+    return order.to_dict()

@@ -4,6 +4,10 @@
 # MAGIC Validate, deduplicate, fix types, remove nulls.
 
 # COMMAND ----------
+
+# RAW_ORDERS_PATH  = "/Volumes/workspace/default/data_cloud_500k/orders/"
+# RAW_USERS_PATH   = "/Volumes/workspace/default/data_cloud_500k/users/users.json"
+# DELTA_BASE       = "/Volumes/workspace/default/data_cloud_500k/delta/"
 from pyspark.sql import functions as F
 from pyspark.sql.functions import col, to_timestamp, when, count, isnan, isnull
 
